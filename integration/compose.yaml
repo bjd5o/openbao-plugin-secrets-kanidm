@@ -1,0 +1,112 @@
+# Integration stack: a real Kanidm and a real (non-dev, Raft-backed)
+# OpenBao with the plugin registered declaratively. Driven by
+# scripts/integration.sh; not for production.
+name: bao-kanidm-itest
+
+configs:
+  kanidm_server_toml:
+    content: |
+      version = "2"
+      bindaddress = "0.0.0.0:8443"
+      db_path = "/data/kanidm.db"
+      tls_chain = "/data/chain.pem"
+      tls_key = "/data/key.pem"
+      domain = "idm.test"
+      origin = "https://idm.test:8443"
+  openbao_hcl:
+    content: |
+      ui           = false
+      api_addr     = "http://127.0.0.1:8200"
+      cluster_addr = "http://127.0.0.1:8201"
+
+      storage "raft" {
+        path    = "/openbao/file"
+        node_id = "itest"
+      }
+
+      listener "tcp" {
+        address     = "0.0.0.0:8200"
+        tls_disable = true
+      }
+
+      plugin_directory = "/openbao/plugins"
+
+      plugin "secret" "kanidm" {
+        command   = "openbao-plugin-secrets-kanidm"
+        version   = "v0.1.0"
+        sha256sum = "@SHA256@"
+      }
+
+services:
+  kanidm-certs:
+    image: docker.io/kanidm/server:${KANIDM_VERSION:-1.11.2}
+    command: ["kanidmd", "cert-generate", "-c", "/kanidm/server.toml"]
+    configs:
+      - source: kanidm_server_toml
+        target: /kanidm/server.toml
+    volumes:
+      - kanidm-data:/data
+    restart: "no"
+
+  kanidm:
+    image: docker.io/kanidm/server:${KANIDM_VERSION:-1.11.2}
+    environment:
+      KANIDM_CONFIG: /kanidm/server.toml
+    configs:
+      - source: kanidm_server_toml
+        target: /kanidm/server.toml
+    volumes:
+      - kanidm-data:/data
+    ports:
+      - "127.0.0.1:${ITEST_KANIDM_PORT:-28443}:8443"
+    depends_on:
+      kanidm-certs:
+        condition: service_completed_successfully
+    networks:
+      itest:
+        aliases: [idm.test]
+
+  # kanidm CLI, sharing kanidm's network namespace so idm.test:8443 is
+  # reachable and the generated certificate's name matches.
+  tools:
+    image: docker.io/kanidm/tools:${KANIDM_VERSION:-1.11.2}
+    entrypoint: ["sleep", "infinity"]
+    environment:
+      KANIDM_URL: https://idm.test:8443
+      KANIDM_CA_PATH: /data/ca.pem
+    volumes:
+      - kanidm-data:/data:ro
+    networks: [itest]
+    depends_on: [kanidm]
+
+  openbao:
+    build:
+      context: ..
+      args:
+        TAGS: faulthook
+    image: openbao-kanidm:itest
+    # Fill in the plugin's checksum from the image, then start a normal
+    # (sealed, Raft-backed) server so a restart keeps leases.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sed "s/@SHA256@/$$(cat /openbao/plugins/openbao-plugin-secrets-kanidm.sha256)/" /openbao/config.in/bao.hcl > /tmp/bao.hcl
+        exec bao server -config=/tmp/bao.hcl
+    configs:
+      - source: openbao_hcl
+        target: /openbao/config.in/bao.hcl
+    volumes:
+      - openbao-data:/openbao/file
+      - kanidm-data:/kanidm:ro
+    ports:
+      - "127.0.0.1:${ITEST_BAO_PORT:-28200}:8200"
+    networks: [itest]
+    depends_on: [kanidm]
+
+volumes:
+  kanidm-data:
+  openbao-data:
+
+networks:
+  itest:
