@@ -137,6 +137,7 @@ jobs:
     steps:
       - name: Record the image digest
         env:
+          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           IMAGE: ${{ needs.push-image.outputs.image }}
           DIGEST: ${{ needs.push-image.outputs.digest }}
