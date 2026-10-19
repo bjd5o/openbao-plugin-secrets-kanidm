@@ -123,9 +123,8 @@ record the image digest.
 
 The workflow needs two repository secrets: `GPG_PRIVATE_KEY` (armored
 private key) and `GPG_PASSWORD`. GitHub creates the container package
-private. When this repository is public the workflow asks for public
-visibility; if that call is refused, switch the package to public on its
-settings page so OpenBao can pull it.
+private. Switch it to public on the package settings page so OpenBao can
+pull it.
 
 ```hcl
 plugin_directory = "/openbao/plugins"

@@ -30,7 +30,7 @@ jobs:
           go-version-file: go.mod
       - run: make integration
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-logs
           path: integration/.state/*.log
@@ -58,7 +58,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make build-target TARGET=${{ matrix.target }} VERSION=${{ github.ref_name }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: plugin-${{ matrix.target }}
           path: bin/*
@@ -76,7 +76,7 @@ jobs:
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSWORD }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: bin
           pattern: plugin-*
@@ -134,25 +134,18 @@ jobs:
     needs: [release, push-image]
     permissions:
       contents: write
-      packages: write
     steps:
       - name: Record the image digest
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           IMAGE: ${{ needs.push-image.outputs.image }}
           DIGEST: ${{ needs.push-image.outputs.digest }}
         run: |
           ref="$IMAGE:$GITHUB_REF_NAME@$DIGEST"
-          visibility="The package is private because this repository is private."
           if [ "${{ github.event.repository.private }}" = "false" ]; then
-            name="${GITHUB_REPOSITORY#*/}"
-            name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-            if gh api --method PUT -H "Accept: application/vnd.github+json" \
-              "/user/packages/container/${name}/visibility" -f visibility=public; then
-              visibility="The package is public."
-            else
-              visibility="The package was created private. Set it to public on the package page so OpenBao can pull it without credentials."
-            fi
+            visibility="GitHub creates the package private. Set it to public on the package page so OpenBao can pull it without credentials."
+          else
+            visibility="The package is private because this repository is private."
           fi
           cat > notes.md <<EOF
           ## Install
