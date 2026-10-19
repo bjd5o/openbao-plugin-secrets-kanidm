@@ -72,7 +72,8 @@ left behind by a rotation whose revoke failed are revoked too.
 ```sh
 make test              # vet + unit tests (fake Kanidm)
 make build             # static binary in dist/
-make release           # linux amd64/arm64 binaries + SHA256SUMS in dist/release
+make release           # cross-compiled archives, checksums, signatures, SBOMs in dist/
+make push              # multi-arch OCI plugin image (buildah)
 make image             # OpenBao image with the plugin baked in
 make integration       # real Kanidm + OpenBao in Docker, about 12 minutes
 ```
@@ -109,6 +110,35 @@ bao plugin reload -plugin kanidm
 
 Leases from older versions keep revoking: revocation only needs the lease's
 internal `service_account` (UUID) and `token_id`, which stay stable.
+
+## Publish
+
+Pushing a `v*` tag runs the release jobs after unit and integration tests.
+They follow the OpenBao plugin repository: one binary per target, each
+packed with `LICENSE` (`.tar.gz`, `.zip` on Windows), `checksums.txt`, a
+detached GPG signature per archive, and a CycloneDX SBOM. Those files are
+the GitHub release. The same binaries are pushed as
+`ghcr.io/bjd5o/openbao-plugin-secrets-kanidm:<tag>`, and the release notes
+record the image digest.
+
+The workflow needs two repository secrets: `GPG_PRIVATE_KEY` (armored
+private key) and `GPG_PASSWORD`. GitHub creates the container package
+private. When this repository is public the workflow asks for public
+visibility; if that call is refused, switch the package to public on its
+settings page so OpenBao can pull it.
+
+```hcl
+plugin_directory = "/openbao/plugins"
+plugin_auto_download = true
+
+plugin "secret" "kanidm" {
+  image = "ghcr.io/bjd5o/openbao-plugin-secrets-kanidm:v0.1.0@sha256:<digest>"
+}
+```
+
+`make release` and `make push` are the same steps locally. Release needs
+`gpg`, `syft`, and `GPG_PASSWORD`. Push needs `buildah` logged in to
+`ghcr.io`. `IMAGE` and `SOURCE` override the image name and source label.
 
 ## Kanidm permissions
 
