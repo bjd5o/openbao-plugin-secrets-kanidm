@@ -1,3 +1,6 @@
+// Copyright (c) 2026 bjd5o
+// SPDX-License-Identifier: MPL-2.0
+
 // Package kanidmtest is an in-memory fake of the Kanidm endpoints the
 // secrets engine uses, for unit tests.
 package kanidmtest

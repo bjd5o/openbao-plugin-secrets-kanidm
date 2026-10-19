@@ -1,3 +1,6 @@
+// Copyright (c) 2026 bjd5o
+// SPDX-License-Identifier: MPL-2.0
+
 package kanidm_test
 
 import (

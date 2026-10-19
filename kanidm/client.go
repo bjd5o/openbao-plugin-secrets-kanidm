@@ -1,3 +1,6 @@
+// Copyright (c) 2026 bjd5o
+// SPDX-License-Identifier: MPL-2.0
+
 // Package kanidm is a minimal client for the Kanidm REST endpoints the
 // secrets engine needs: minting, listing and deleting service account API
 // tokens, and checking the caller's own identity.

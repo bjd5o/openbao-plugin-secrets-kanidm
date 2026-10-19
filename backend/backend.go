@@ -1,3 +1,6 @@
+// Copyright (c) 2026 bjd5o
+// SPDX-License-Identifier: MPL-2.0
+
 // Package backend implements the OpenBao Kanidm secrets engine: it mints
 // Kanidm service account API tokens under OpenBao leases and revokes them
 // when the lease ends.

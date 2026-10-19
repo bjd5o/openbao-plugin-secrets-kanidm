@@ -1,3 +1,6 @@
+// Copyright (c) 2026 bjd5o
+// SPDX-License-Identifier: MPL-2.0
+
 //go:build integration
 
 // Package integration runs the engine against real Kanidm and OpenBao
