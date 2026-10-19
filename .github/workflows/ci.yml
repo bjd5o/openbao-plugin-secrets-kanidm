@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -20,7 +20,7 @@ jobs:
       - run: make test
 
   integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: unit
     timeout-minutes: 30
     steps:
@@ -37,7 +37,7 @@ jobs:
 
   targets:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
     steps:
@@ -47,7 +47,7 @@ jobs:
 
   build:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [unit, integration, targets]
     strategy:
       matrix:
@@ -65,7 +65,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: build
     permissions:
       contents: write
@@ -97,7 +97,7 @@ jobs:
 
   push-image:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: build
     permissions:
       contents: read
@@ -130,7 +130,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [release, push-image]
     permissions:
       contents: write
