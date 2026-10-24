@@ -373,7 +373,7 @@ func TestIntegration(t *testing.T) {
 			// Give the plugin a token whose secret the test knows.
 			secret, id := observerMint(t, "openbao-kanidm", "itest-rotate")
 			minted := time.Now()
-			baoOK(t, http.MethodPost, "kanidm/config", map[string]any{"token": secret})
+			baoOK(t, http.MethodPost, "kanidm/config/token", map[string]any{"token": secret})
 			if got := baoOK(t, http.MethodGet, "kanidm/config", nil).Data["token_id"]; got != id {
 				t.Fatalf("config token_id %v, want %s", got, id)
 			}

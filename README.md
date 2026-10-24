@@ -43,18 +43,27 @@ left behind by a rotation whose revoke failed are revoked too.
 
 | Path | Operations | Fields |
 | --- | --- | --- |
-| `config` | read, write, delete | `url`, `token` (write-only), `ca_cert`, `request_timeout` (30s), `expiry_buffer` (5m), `rotation_period` (0 = manual; otherwise at least 10m) |
+| `config` | read, write, delete | `request_timeout` (30s), `expiry_buffer` (5m), `rotation_period` (0 = manual; otherwise at least 10m) |
+| `config/url` | read, write, delete | `url` |
+| `config/ca` | read, write, delete | `ca_cert` |
+| `config/token` | read, write, delete | `token` (write-only) |
 | `config/rotate-root` | write | — |
 | `roles/<name>` | read, write, delete, list | `service_account` (name, SPN or UUID), `read_write` (false), `ttl`, `max_ttl`, `renewable` (false) |
 | `api-token/<name>` | read | returns `token`, `token_id`, `service_account`, `expires_at` |
 | `tidy` | write | — returns `revoked_tokens`, `expired_records` |
 
-- **config** writes check the token with `GET /v1/self` before saving, and
-  reject read-only tokens. Reads return everything except the token, plus
-  `label_prefix`, the plugin's `service_account`, `token_id` and
-  `token_issued_at`. Writing a new token deletes the previous one in
-  Kanidm (with the new token). The label prefix is generated on first write and kept
-  across config deletes, so tidy keeps recognising this mount's tokens.
+- **config/url** stores the Kanidm origin. **config/ca** stores the PEM
+  CA bundle used to verify Kanidm; delete it to use the system roots.
+  **config** holds timeouts and the rotation period. Reads of `config`
+  return the origin, plus `label_prefix`, the plugin's `service_account`,
+  `token_id` and `token_issued_at`. Deleting `config` also deletes
+  `config/url`, `config/ca`, and `config/token`. The label prefix is
+  generated on first write and kept across config deletes, so tidy keeps
+  recognising this mount's tokens.
+- **config/token** stores the plugin's API token on its own, seal-wrapped.
+  Writes check it with `GET /v1/self` and reject read-only tokens. Reads
+  return `token_id` and `token_issued_at`, never the token. Writing a new
+  token deletes the previous one in Kanidm (with the new token).
 - **rotate-root** mints a new token for the plugin's own account, checks it
   with `/v1/self`, saves it, then deletes the old token using the new one.
   If that delete fails, the new token is kept and the response carries a
@@ -170,7 +179,9 @@ mint tokens for `tofu`, a compromised OpenBao means a compromised Kanidm.
 3. mints one token for `openbao-kanidm` (handing the account to
    `idm_admins` for that moment only, since idm_admin is not in the issuers
    group);
-4. enables the mount and writes `kanidm/config` (token on stdin);
+4. enables the mount, writes `kanidm/config`, `kanidm/config/url`, and
+   `kanidm/config/ca` when `KANIDM_CA_FILE` is set, then writes
+   `kanidm/config/token` (token on stdin);
 5. runs `rotate-root`, so the bootstrap token is deleted;
 6. writes roles `tofu` and `mailer` and the policies `kanidm-tofu`,
    `kanidm-mailer` and `kanidm-operator`;

@@ -63,11 +63,14 @@ The plugin talks to Kanidm only with its own token; consumers never touch the pl
 
 ## API surface
 
-Five paths under the mount (`kanidm/` below). Only `api-token/` returns a secret; `config` accepts the plugin's token but never returns it.
+Eight paths under the mount (`kanidm/` below). Only `api-token/` returns a secret; `config/token` accepts the plugin's token but never returns it.
 
 | Path | Operations | Fields | Notes |
 | --- | --- | --- | --- |
-| `config` | read, write, delete | `url`, `token` (write-only), `ca_cert`, `request_timeout`, `expiry_buffer` (default 5m), `rotation_period` (0 = manual only) | Write calls `GET /v1/self` with the token before saving; read returns everything except `token` |
+| `config` | read, write, delete | `request_timeout` (30s), `expiry_buffer` (default 5m), `rotation_period` (0 = manual only) | Reads return the origin stored at `config/url`. Delete also removes `config/url`, `config/ca`, and `config/token` |
+| `config/url` | read, write, delete | `url` | Kanidm origin |
+| `config/ca` | read, write, delete | `ca_cert` | PEM bundle used instead of the system roots. Delete to go back to the system roots |
+| `config/token` | read, write, delete | `token` (write-only) | Write calls `GET /v1/self` with the token before saving. The token is seal-wrapped at this path. Reads return `token_id` and `token_issued_at` |
 | `config/rotate-root` | write | none | Mints a new token for the plugin's own account, saves it, revokes the old one |
 | `roles/<name>` | read, write, delete, list | `service_account` (name or UUID), `read_write` (default false), `ttl`, `max_ttl`, `renewable` (default false) | Write rejects `ttl` > `max_ttl`; non-renewable forces `ttl` = `max_ttl` |
 | `api-token/<name>` | read | — | Returns `token`, `token_id`, `service_account`, `expires_at`, under a lease |
@@ -97,7 +100,7 @@ Done when: the plugin registers and mounts, and the client's calls pass against 
 
 ### Phase 2: Config and roles (0.5 day)
 
-- [x] `config` path; write validates the token with `GET /v1/self`; `token` never returned on read
+- [x] `config` and `config/token`; token writes validate with `GET /v1/self`; `token` never returned on read
 - [x] A per-mount label prefix (`bao-<6 random chars>-`) generated on first config write and stored, so tidy only touches this mount's tokens
 - [x] `roles/<name>` CRUD and list, with the `ttl`/`max_ttl`/`renewable` rules from API surface
 
@@ -203,7 +206,7 @@ One idempotent script run, after which no person or file holds a Kanidm credenti
    - service account `openbao-kanidm`, added to that group, `entry_managed_by` the group;
    - service accounts `tofu` and `mailer`, `entry_managed_by` the group, plus their own permission groups.
 4. Mint one API token for `openbao-kanidm`.
-5. `bao secrets enable -path=kanidm kanidm`, then write `kanidm/config` with the URL, CA and that token.
+5. `bao secrets enable -path=kanidm kanidm`, then write `kanidm/config`, `kanidm/config/url` with the Kanidm origin, `kanidm/config/ca` with the CA when Kanidm's certificate is not signed by a system root, and `kanidm/config/token` with that token.
 6. `bao write -f kanidm/config/rotate-root`. The token from step 4 is now revoked.
 7. Write roles `kanidm/roles/tofu` and `kanidm/roles/mailer` and their OpenBao policies.
 8. Unset the password variable and exit.

@@ -5,7 +5,13 @@ package backend
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"strings"
 	"testing"
@@ -49,6 +55,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	srv.AddAccount("tofu")
 	srv.AddAccount("mailer")
 	env.rootSecret, env.rootID = srv.Mint("openbao-kanidm", "bootstrap", nil, true)
+	env.ok(logical.UpdateOperation, "config/url", map[string]any{"url": srv.URL})
 	return env
 }
 
@@ -92,11 +99,11 @@ func (e *testEnv) fails(op logical.Operation, path string, data map[string]any) 
 
 func (e *testEnv) configure(extra map[string]any) {
 	e.t.Helper()
-	data := map[string]any{"url": e.kanidm.URL, "token": e.rootSecret}
-	for k, v := range extra {
-		data[k] = v
+	if extra == nil {
+		extra = map[string]any{}
 	}
-	e.ok(logical.UpdateOperation, "config", data)
+	e.ok(logical.UpdateOperation, "config", extra)
+	e.ok(logical.UpdateOperation, "config/token", map[string]any{"token": e.rootSecret})
 }
 
 func (e *testEnv) config() *kanidmConfig {
@@ -106,6 +113,15 @@ func (e *testEnv) config() *kanidmConfig {
 		e.t.Fatalf("getConfig: %v %v", cfg, err)
 	}
 	return cfg
+}
+
+func (e *testEnv) rootToken() string {
+	e.t.Helper()
+	token, err := getRootToken(context.Background(), e.storage)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return token
 }
 
 // issue reads api-token/<role> and returns the response.
@@ -182,14 +198,17 @@ func containsAll(t *testing.T, got string, want ...string) {
 func TestConfigWriteValidatesAndHidesToken(t *testing.T) {
 	e := newTestEnv(t)
 
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"token": e.rootSecret}), "url is required")
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"url": e.kanidm.URL}), "token is required")
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"url": e.kanidm.URL, "token": "bogus"}), "/v1/self", "401")
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"url": "ftp://x", "token": e.rootSecret}), "scheme")
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"url": e.kanidm.URL, "token": e.rootSecret, "ca_cert": "nope"}), "PEM")
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"url": e.kanidm.URL, "token": e.rootSecret, "rotation_period": "5m"}), "rotation_period")
+	containsAll(t, e.fails(logical.UpdateOperation, "config/token", map[string]any{}), "token is required")
+	e.ok(logical.DeleteOperation, "config/url", nil)
+	containsAll(t, e.fails(logical.UpdateOperation, "config/token", map[string]any{"token": e.rootSecret}), "url")
+	e.ok(logical.UpdateOperation, "config/url", map[string]any{"url": e.kanidm.URL})
+	containsAll(t, e.fails(logical.UpdateOperation, "config/token", map[string]any{"token": "bogus"}), "/v1/self", "401")
+	containsAll(t, e.fails(logical.UpdateOperation, "config/url", map[string]any{"url": "ftp://x"}), "scheme")
+	containsAll(t, e.fails(logical.UpdateOperation, "config/ca", map[string]any{"ca_cert": "nope"}), "PEM")
+	containsAll(t, e.fails(logical.UpdateOperation, "config/ca", map[string]any{}), "ca_cert is required")
+	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"rotation_period": "5m"}), "rotation_period")
 	ro, _ := e.kanidm.Mint("openbao-kanidm", "ro", nil, false)
-	containsAll(t, e.fails(logical.UpdateOperation, "config", map[string]any{"url": e.kanidm.URL, "token": ro}), "read-write")
+	containsAll(t, e.fails(logical.UpdateOperation, "config/token", map[string]any{"token": ro}), "read-write")
 
 	e.configure(map[string]any{"rotation_period": "24h"})
 
@@ -207,6 +226,38 @@ func TestConfigWriteValidatesAndHidesToken(t *testing.T) {
 		resp.Data["token_id"] != e.rootID {
 		t.Fatalf("unexpected config: %#v", resp.Data)
 	}
+	stored, err := e.storage.Get(context.Background(), configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(stored.Value), e.rootSecret) || strings.Contains(string(stored.Value), `"url"`) || strings.Contains(string(stored.Value), `"ca_cert"`) {
+		t.Fatalf("config stores the token, url, or ca: %s", stored.Value)
+	}
+	if _, ok := resp.Data["ca_cert"]; ok {
+		t.Fatal("config read returned ca_cert")
+	}
+	caPEM := testCAPEM(t)
+	e.ok(logical.UpdateOperation, "config/ca", map[string]any{"ca_cert": caPEM})
+	caResp := e.ok(logical.ReadOperation, "config/ca", nil)
+	if caResp.Data["ca_cert"] != caPEM {
+		t.Fatalf("config/ca read: %#v", caResp.Data)
+	}
+	if resp := e.ok(logical.ReadOperation, "config", nil); resp.Data["ca_cert"] != nil {
+		t.Fatalf("config read returned ca_cert: %#v", resp.Data)
+	}
+	secret, err := e.storage.Get(context.Background(), tokenPath)
+	if err != nil || secret == nil || !strings.Contains(string(secret.Value), e.rootSecret) {
+		t.Fatal("config/token does not hold the token")
+	}
+	tokenResp := e.ok(logical.ReadOperation, "config/token", nil)
+	if _, ok := tokenResp.Data["token"]; ok || tokenResp.Data["token_id"] != e.rootID {
+		t.Fatalf("config/token read: %#v", tokenResp.Data)
+	}
+	for _, v := range tokenResp.Data {
+		if s, ok := v.(string); ok && strings.Contains(s, e.rootSecret) {
+			t.Fatal("config/token read leaked the token")
+		}
+	}
 	prefix := resp.Data["label_prefix"].(string)
 	if !strings.HasPrefix(prefix, "bao-") || len(prefix) != len("bao-xxxxxx-") || !strings.HasSuffix(prefix, "-") {
 		t.Fatalf("bad label prefix %q", prefix)
@@ -216,17 +267,47 @@ func TestConfigWriteValidatesAndHidesToken(t *testing.T) {
 	// config delete.
 	e.ok(logical.UpdateOperation, "config", map[string]any{"expiry_buffer": "10m"})
 	cfg := e.config()
-	if cfg.Token != e.rootSecret || cfg.ExpiryBuffer != 10*time.Minute || cfg.LabelPrefix != prefix {
-		t.Fatalf("update lost fields: %+v", cfg)
+	if e.rootToken() != e.rootSecret || cfg.ExpiryBuffer != 10*time.Minute || cfg.LabelPrefix != prefix {
+		t.Fatalf("update lost fields: %+v token %q", cfg, e.rootToken())
 	}
 	e.ok(logical.DeleteOperation, "config", nil)
 	if resp := e.ok(logical.ReadOperation, "config", nil); resp != nil {
 		t.Fatalf("config still readable after delete: %#v", resp)
 	}
+	if e.rootToken() != "" {
+		t.Fatal("config delete left the token")
+	}
+	if resp := e.ok(logical.ReadOperation, "config/url", nil); resp != nil {
+		t.Fatalf("config delete left the url: %#v", resp)
+	}
+	if resp := e.ok(logical.ReadOperation, "config/ca", nil); resp != nil {
+		t.Fatalf("config delete left the ca: %#v", resp)
+	}
+	e.ok(logical.UpdateOperation, "config/url", map[string]any{"url": e.kanidm.URL})
 	e.configure(nil)
 	if e.config().LabelPrefix != prefix {
 		t.Fatal("label prefix changed across config delete")
 	}
+}
+
+func testCAPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 // --- roles ----------------------------------------------------------------
@@ -622,10 +703,11 @@ func TestRotateRoot(t *testing.T) {
 
 	resp := e.ok(logical.UpdateOperation, "config/rotate-root", nil)
 	cfg := e.config()
-	if cfg.Token == e.rootSecret || cfg.TokenID == e.rootID || resp.Data["token_id"] != cfg.TokenID {
+	rotated := e.rootToken()
+	if rotated == e.rootSecret || cfg.TokenID == e.rootID || resp.Data["token_id"] != cfg.TokenID {
 		t.Fatal("token not rotated")
 	}
-	if !e.kanidm.Valid(cfg.Token) || e.kanidm.Valid(e.rootSecret) {
+	if !e.kanidm.Valid(rotated) || e.kanidm.Valid(e.rootSecret) {
 		t.Fatal("new token invalid or old token still valid")
 	}
 	if !strings.HasPrefix(e.kanidm.TokenByID(cfg.TokenID).Label, cfg.LabelPrefix+"root-") {
@@ -643,7 +725,7 @@ func TestRotateRoot(t *testing.T) {
 
 	// And it rotates again.
 	e.ok(logical.UpdateOperation, "config/rotate-root", nil)
-	if e.kanidm.Valid(cfg.Token) || e.config().TokenID == cfg.TokenID {
+	if e.kanidm.Valid(rotated) || e.config().TokenID == cfg.TokenID {
 		t.Fatal("second rotation did not replace the token")
 	}
 }
@@ -658,7 +740,8 @@ func TestRotateRootSavesNewBeforeRevokingOld(t *testing.T) {
 	e.kanidm.AddFault(func(w http.ResponseWriter, r *http.Request) bool {
 		if r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/"+e.rootID) {
 			cfg, _ := getConfig(context.Background(), e.storage)
-			sawNew = cfg != nil && cfg.TokenID != e.rootID && cfg.Token != e.rootSecret
+			tok, _ := getRootToken(context.Background(), e.storage)
+			sawNew = cfg != nil && cfg.TokenID != e.rootID && tok != e.rootSecret
 		}
 		return false
 	})
@@ -677,8 +760,7 @@ func TestRotateRootKeepsNewTokenWhenRevokeFails(t *testing.T) {
 	if len(resp.Warnings) == 0 || !strings.Contains(resp.Warnings[0], e.rootID) {
 		t.Fatalf("want a warning naming the old token, got %v", resp.Warnings)
 	}
-	cfg := e.config()
-	if cfg.Token == e.rootSecret || !e.kanidm.Valid(cfg.Token) {
+	if e.rootToken() == e.rootSecret || !e.kanidm.Valid(e.rootToken()) {
 		t.Fatal("new token not kept")
 	}
 }
@@ -701,8 +783,7 @@ func TestRotateRootFailureKeepsOldToken(t *testing.T) {
 	if n == 0 {
 		t.Fatal("new token was never checked")
 	}
-	cfg := e.config()
-	if cfg.Token != e.rootSecret || !e.kanidm.Valid(e.rootSecret) {
+	if e.rootToken() != e.rootSecret || !e.kanidm.Valid(e.rootSecret) {
 		t.Fatal("old token replaced or revoked by a failed rotation")
 	}
 	if toks := e.kanidm.Tokens("openbao-kanidm"); len(toks) != 1 {
@@ -808,7 +889,7 @@ func TestConfigTokenChangeDeletesPreviousToken(t *testing.T) {
 	e.configure(nil)
 	next, nextID := e.kanidm.Mint("openbao-kanidm", "replacement", nil, true)
 
-	resp := e.ok(logical.UpdateOperation, "config", map[string]any{"token": next})
+	resp := e.ok(logical.UpdateOperation, "config/token", map[string]any{"token": next})
 	if resp != nil && len(resp.Warnings) > 0 {
 		t.Fatalf("warnings: %v", resp.Warnings)
 	}
@@ -819,7 +900,7 @@ func TestConfigTokenChangeDeletesPreviousToken(t *testing.T) {
 		t.Fatal("previous plugin token survived the config write")
 	}
 	// Re-writing the same token is a no-op.
-	e.ok(logical.UpdateOperation, "config", map[string]any{"token": next})
+	e.ok(logical.UpdateOperation, "config/token", map[string]any{"token": next})
 	if !e.kanidm.Valid(next) {
 		t.Fatal("re-writing the same token revoked it")
 	}
@@ -844,7 +925,7 @@ func TestTidyRevokesStaleRootTokens(t *testing.T) {
 	if e.kanidm.TokenByID(first) != nil {
 		t.Fatal("stale root token survived tidy")
 	}
-	if e.kanidm.TokenByID(current) == nil || !e.kanidm.Valid(e.config().Token) {
+	if e.kanidm.TokenByID(current) == nil || !e.kanidm.Valid(e.rootToken()) {
 		t.Fatal("tidy revoked the current root token")
 	}
 }

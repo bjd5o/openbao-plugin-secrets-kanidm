@@ -1,6 +1,6 @@
 module openbao-plugin-secrets-kanidm
 
-go 1.27.0
+go 1.27.3
 
 require (
 	github.com/hashicorp/go-hclog v1.6.3

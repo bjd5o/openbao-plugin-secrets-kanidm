@@ -64,7 +64,14 @@ func (b *backend) rotateRoot(ctx context.Context, s logical.Storage) ([]string, 
 	if cfg == nil {
 		return nil, errNotConfigured
 	}
-	oldClient, err := cfg.newClient(cfg.Token)
+	token, err := getRootToken(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	if token == "" {
+		return nil, errNotConfigured
+	}
+	oldClient, err := b.newClient(ctx, s, cfg, token)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +118,7 @@ func (b *backend) rotateRoot(ctx context.Context, s logical.Storage) ([]string, 
 	if err != nil {
 		return fail(err)
 	}
-	newClient, err := cfg.newClient(newToken)
+	newClient, err := b.newClient(ctx, s, cfg, newToken)
 	if err != nil {
 		return fail(err)
 	}
@@ -124,12 +131,17 @@ func (b *backend) rotateRoot(ctx context.Context, s logical.Storage) ([]string, 
 	}
 
 	oldTokenID := cfg.TokenID
+	if err := putRootToken(ctx, s, newToken); err != nil {
+		return fail(fmt.Errorf("saving the new token: %w", err))
+	}
 	next := *cfg
-	next.Token = newToken
 	next.TokenID = info.TokenID
 	next.TokenIssuedAt = info.IssuedAtTime()
 	next.AccountID, next.AccountName = self.UUID, self.Name
 	if err := putConfig(ctx, s, &next); err != nil {
+		if rbErr := putRootToken(ctx, s, token); rbErr != nil {
+			b.Logger().Error("restoring the previous token failed", "error", rbErr)
+		}
 		return fail(fmt.Errorf("saving the new token: %w", err))
 	}
 	// The new token is saved; the WAL entry would now only ever skip it.

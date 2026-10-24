@@ -17,8 +17,8 @@
 #   BAO_CLI          OpenBao CLI (default: bao)
 #
 # Settings:
-#   KANIDM_PLUGIN_URL  Kanidm URL as the plugin (inside OpenBao) reaches it. Required.
-#   KANIDM_CA_FILE     PEM file with Kanidm's CA, read here and stored in config. Optional.
+#   KANIDM_PLUGIN_URL  Kanidm origin written to <mount>/config/url. Required.
+#   KANIDM_CA_FILE     PEM file with Kanidm's CA, written to <mount>/config/ca. Optional.
 #   MOUNT              mount path (default: kanidm)
 #   PLUGIN_VERSION     plugin version to mount (default: v0.1.0)
 #   TOFU_GROUPS        Kanidm groups the tofu account belongs to (space separated)
@@ -128,18 +128,22 @@ kanidm service-account update "$PLUGIN_ACCOUNT" --entry-managed-by "$ISSUERS" >/
 # The CLI exits 0 on most errors, so check the output looks like a token.
 [[ $PLUGIN_TOKEN =~ ^[A-Za-z0-9._-]{40,}$ ]] || { echo "could not mint the plugin token" >&2; exit 1; }
 
-# 5. Mount and configure. The token goes in on stdin, never argv.
+# 5. Mount and configure. The Kanidm origin goes to config/url and the CA
+# to config/ca. The token goes in on stdin, never argv.
 if ! bao secrets list -format=json | grep -q "\"$MOUNT/\""; then
 	log "enabling $MOUNT/"
 	bao secrets enable -path="$MOUNT" -plugin-version="$PLUGIN_VERSION" kanidm >/dev/null
 fi
-ca_args=()
-if [[ -n ${KANIDM_CA_FILE:-} ]]; then
-	ca_args=("ca_cert=$(cat "$KANIDM_CA_FILE")")
-fi
 log "writing $MOUNT/config"
-printf '%s' "$PLUGIN_TOKEN" | bao write "$MOUNT/config" url="$KANIDM_PLUGIN_URL" token=- \
-	rotation_period="$ROTATION_PERIOD" "${ca_args[@]}" >/dev/null
+bao write "$MOUNT/config" rotation_period="$ROTATION_PERIOD" >/dev/null
+log "writing $MOUNT/config/url"
+bao write "$MOUNT/config/url" url="$KANIDM_PLUGIN_URL" >/dev/null
+if [[ -n ${KANIDM_CA_FILE:-} ]]; then
+	log "writing $MOUNT/config/ca"
+	bao write "$MOUNT/config/ca" "ca_cert=$(cat "$KANIDM_CA_FILE")" >/dev/null
+fi
+log "writing $MOUNT/config/token"
+printf '%s' "$PLUGIN_TOKEN" | bao write "$MOUNT/config/token" token=- >/dev/null
 unset PLUGIN_TOKEN
 
 # 6. Rotate the bootstrap token away. (Kanidm keeps accepting a deleted
@@ -155,6 +159,15 @@ printf 'path "%s/api-token/tofu" {\n  capabilities = ["read"]\n}\n' "$MOUNT" | b
 printf 'path "%s/api-token/mailer" {\n  capabilities = ["read"]\n}\n' "$MOUNT" | bao policy write kanidm-mailer - >/dev/null
 cat <<EOF | bao policy write kanidm-operator - >/dev/null
 path "$MOUNT/config" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+path "$MOUNT/config/url" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+path "$MOUNT/config/ca" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+path "$MOUNT/config/token" {
   capabilities = ["create", "read", "update", "delete"]
 }
 path "$MOUNT/config/rotate-root" {

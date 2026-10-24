@@ -53,7 +53,7 @@ type backend struct {
 
 	// rootLock serialises use of the plugin's own Kanidm token against
 	// changes to it. Anything that calls Kanidm holds it for reading;
-	// config writes, config deletes and rotate-root hold it for writing,
+	// config writes, token writes, config deletes and rotate-root hold it for writing,
 	// so a rotation never races a request using the old token.
 	rootLock sync.RWMutex
 
@@ -85,11 +85,14 @@ func newBackend() *backend {
 		Help:        strings.TrimSpace(backendHelp),
 		BackendType: logical.TypeLogical,
 		PathsSpecial: &logical.Paths{
-			SealWrapStorage: []string{"config"},
+			SealWrapStorage: []string{"config", "config/token"},
 		},
 		Paths: framework.PathAppend(
 			[]*framework.Path{
 				pathConfig(b),
+				pathConfigURL(b),
+				pathConfigCA(b),
+				pathConfigToken(b),
 				pathRotateRoot(b),
 				pathTidy(b),
 			},
@@ -110,7 +113,7 @@ func newBackend() *backend {
 }
 
 func (b *backend) invalidate(_ context.Context, key string) {
-	if key == configPath {
+	if key == configPath || key == tokenPath || key == urlPath || key == caPath {
 		b.resetClient()
 	}
 }
@@ -131,13 +134,20 @@ func (b *backend) getClient(ctx context.Context, s logical.Storage) (*kanidm.Cli
 	if cfg == nil {
 		return nil, nil, errNotConfigured
 	}
+	token, err := getRootToken(ctx, s)
+	if err != nil {
+		return nil, nil, err
+	}
+	if token == "" {
+		return nil, nil, errNotConfigured
+	}
 
 	b.clientMu.Lock()
 	defer b.clientMu.Unlock()
 	if b.client != nil {
 		return b.client, cfg, nil
 	}
-	c, err := cfg.newClient(cfg.Token)
+	c, err := b.newClient(ctx, s, cfg, token)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -164,6 +174,7 @@ The Kanidm secrets engine mints Kanidm service account API tokens on demand.
 Each token is tied to an OpenBao lease and revoked in Kanidm when the lease
 ends; the token's own Kanidm expiry is a backstop.
 
-Configure the engine with "config", define roles with "roles/<name>", then
-read "api-token/<name>" to get a token.
+Write the Kanidm origin to "config/url", the CA bundle to "config/ca",
+timeouts and rotation to "config", and the plugin token to "config/token".
+Define roles with "roles/<name>", then read "api-token/<name>" to get a token.
 `
